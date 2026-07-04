@@ -438,6 +438,14 @@ def _split_remote_ref(ref):
     return remote, branch
 
 
+def _is_local_release_tag(path, ref):
+    """Return True when ref is an existing local release tag."""
+    if not ref or '/' in ref:
+        return False
+    _, ok = _run_git(['rev-parse', '--verify', f'refs/tags/{ref}^{{commit}}'], path)
+    return bool(ok)
+
+
 def _detect_default_branch(path):
     """Detect the remote default branch (master or main)."""
     out, ok = _run_git(['symbolic-ref', 'refs/remotes/origin/HEAD'], path)
@@ -1449,16 +1457,24 @@ def _apply_update_inner(target):
             return {'ok': False, 'message': 'Failed to stash local changes'}
         stashed = True
 
-    # Pull with ff-only (no merge commits).
+    # Pull/merge with ff-only (no merge commits).
     # Split tracking refs like 'origin/main' into separate remote + branch
     # arguments — git treats 'origin/main' as a repository name otherwise.
-    remote, branch = _split_remote_ref(compare_ref)
-    pull_args = ['pull', '--ff-only']
-    if remote:
-        pull_args.extend([remote, branch])
+    #
+    # Release tags are different: `git pull origin vX.Y.Z` asks the remote for
+    # a branch/ref named vX.Y.Z and can fail with "couldn't find remote ref"
+    # even though the tag was fetched successfully. Tags are already refreshed
+    # above, so fast-forward merge the local tag directly.
+    if _is_local_release_tag(path, compare_ref):
+        pull_out, pull_ok = _run_git(['merge', '--ff-only', compare_ref], path, timeout=30)
     else:
-        pull_args.extend(['origin', compare_ref])
-    pull_out, pull_ok = _run_git(pull_args, path, timeout=30)
+        remote, branch = _split_remote_ref(compare_ref)
+        pull_args = ['pull', '--ff-only']
+        if remote:
+            pull_args.extend([remote, branch])
+        else:
+            pull_args.extend(['origin', compare_ref])
+        pull_out, pull_ok = _run_git(pull_args, path, timeout=30)
     if not pull_ok:
         pull_lower = pull_out.lower()
         detail = pull_out.strip()[:300] if pull_out.strip() else '(no output from git)'
